@@ -88,8 +88,8 @@ wait_for() {
 }
 if "$script" status '../bad' >/dev/null 2>&1; then exit 1; fi
 output="$(cd "$TEST_ROOT/repo" && env -u TMUX "$script" start \
-  --model gpt-6-astra --effort medium \
-  --subagent-model 'openai/gpt-5.6-"luna"' --subagent-effort low 12 34)"
+  --model gpt-6-sol --effort medium \
+  --subagent-model gpt-6-luna --subagent-effort low 12 34)"
 run="$(awk '/^run: / { print $2 }' <<< "$output")"
 run_dir="$CODEX_ISSUES_STATE_ROOT/$run"
 pane="$(awk -F '\t' '$1 == 12 {print $3}' "$run_dir/workers.tsv")"
@@ -99,10 +99,10 @@ python3 - "$TEST_ROOT/args-12.json" "$TEST_ROOT/args-34.json" <<'PY'
 import json, sys, tomllib
 for path in sys.argv[1:]:
     args = json.load(open(path))
-    assert args[args.index('--model') + 1] == 'gpt-6-astra'
+    assert args[args.index('--model') + 1] == 'gpt-6-sol'
     configs = [tomllib.loads(args[i + 1]) for i, arg in enumerate(args) if arg == '-c']
     assert any(config.get('model_reasoning_effort') == 'medium' for config in configs)
-    assert any(config.get('agents', {}).get('default_subagent_model') == 'openai/gpt-5.6-"luna"' for config in configs)
+    assert any(config.get('agents', {}).get('default_subagent_model') == 'gpt-6-luna' for config in configs)
     assert any(config.get('agents', {}).get('default_subagent_reasoning_effort') == 'low' for config in configs)
 PY
 "$script" list | grep "$run" >/dev/null
