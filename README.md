@@ -74,9 +74,9 @@ The skill's model table is a personal starting policy. Edit it for models availa
 ## Models
 
 ```bash
-codex-issues start --model <model-id> --effort medium 123
-codex-issues start --model <model-id> --effort high \
-  --subagent-model <worker-model-id> --subagent-effort medium 124
+codex-issues start --model gpt-6-sol --effort medium 123
+codex-issues start --model gpt-6-sol --effort high \
+  --subagent-model gpt-6-luna --subagent-effort medium 124
 ```
 
 `--model` and `--effort` configure the issue session. The subagent flags set defaults for agents that session spawns. They do not change the supervisor. Omitted flags leave the normal Codex configuration in effect.

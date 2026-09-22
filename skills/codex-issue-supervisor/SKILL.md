@@ -23,20 +23,22 @@ Choose per ticket from the issue's acceptance criteria, affected surface, risk, 
 
 | Ticket shape | Issue model | Effort |
 | --- | --- | --- |
-| Documentation, configuration, formatting, or obvious mechanical edits | `gpt-5.6-luna` | `low` or `medium` |
+| Documentation, configuration, formatting, or obvious mechanical edits | `gpt-6-luna` (or `gpt-5.6-luna`) | `low` or `medium` |
 | Routine, well-scoped implementation with familiar patterns | `gpt-5.6-terra` | `medium` |
-| Substantial implementation, debugging, or multi-file behavior | `gpt-5.6` | `medium` |
-| Difficult debugging, risky migration, broad refactor, or subtle correctness work | `gpt-5.6` | `high` |
+| Substantial implementation, debugging, or multi-file behavior | `gpt-6-sol` (or `gpt-5.6-sol`) | `medium` |
+| Difficult debugging, risky migration, broad refactor, or subtle correctness work | `gpt-6-sol` | `high` |
 | Architecture, security-sensitive work, cross-repository coordination, or repeated failure at a lower tier | `gpt-6-astra` | `high` |
 
 Use the cheaper capable tier. Escalate when evidence shows the original choice is inadequate. If a named model is unavailable, select the closest available tier and record the substitution.
+
+New model IDs are passed through unchanged by the launcher. Their availability can depend on the installed Codex version and account; if Codex rejects an ID, use a supported fallback and record the substitution.
 
 Set subagent defaults one tier cheaper unless the ticket requires equally strong delegated reasoning:
 
 - Luna issue session: Luna subagents at `medium`.
 - Terra issue session: Luna subagents at `medium`.
-- GPT-5.6 issue session: Terra subagents at `medium`.
-- Astra issue session: GPT-5.6 subagents at `medium`, or `high` for genuinely difficult delegated work.
+- Sol issue session: Luna subagents at `medium`.
+- Astra issue session: Sol subagents at `medium`, or `high` for genuinely difficult delegated work.
 
 An issue session may explicitly choose a different model for an individual subagent when justified. Explicit spawn settings override these defaults.
 
