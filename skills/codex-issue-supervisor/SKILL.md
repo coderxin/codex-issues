@@ -76,6 +76,15 @@ codex-issues send <run> <issue> <message...>
 
 A worker saying “done” is not sufficient. Verify the issue's acceptance criteria, relevant tests, review and CI status, PR merge, default-branch state, deployment when applicable, and production behavior when applicable. Ensure resources owned by the ticket session are cleaned without touching resources belonging to other sessions.
 
+## Exit workers and clean up
+
+After verifying delivery and confirming commits are preserved remotely:
+
+1. Inspect `status` and `show` for each worker. `done` is an outcome marker; its interactive Codex process may still be running.
+2. For each live worker, hand off to the user with the exact `codex-issues attach <run> <issue>` command and ask them to enter `/quit` at the idle Codex prompt. Keep the run map and verification evidence while awaiting their return. The launcher has no unattended shutdown command; `send` queues a model message and cannot execute `/quit` as a terminal command. Preserve the worktree and report cleanup as pending until exit is confirmed.
+3. Recheck `codex-issues status <run>`. When every worker's PROCESS column is `-`, run `codex-issues cleanup <run>`. If cleanup refuses, inspect the reported active process or dirty worktree and preserve it until resolved.
+4. Confirm the run is absent from `codex-issues list` and its recorded worktree paths no longer exist. Retained branches are intentional.
+
 Keep the goal active while any ticket remains queued, running, blocked but recoverable, unverified, unmerged, undeployed when deployment is required, or not cleaned up. Mark the goal complete only when every supplied ticket is verified and no managed session remains active.
 
 Finish with a compact report listing each ticket, selected issue/subagent models, result, PR or commit, verification evidence, and any intentionally retained resource or unresolved blocker.
