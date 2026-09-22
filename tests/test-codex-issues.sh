@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-script="$repo_root/bin/codex-issues"
+script="${CODEX_ISSUES_TEST_SCRIPT:-$repo_root/bin/codex-issues}"
 bash -n "$script"
 "$script" --help | grep 'codex-issues start' >/dev/null
 
@@ -51,7 +51,13 @@ issue = pathlib.Path.cwd().name.removeprefix('issue-')
 (root / ('args-' + issue + '.json')).write_text(json.dumps(args))
 for event in ('SessionStart', 'UserPromptSubmit'):
     command = hooks[event][0]['hooks'][0]['command']
-    payload = {'cwd': os.getcwd(), 'session_id': 'thread-' + issue, 'hook_event_name': event}
+    payload = {'cwd': os.getcwd(), 'session_id': 'thread-' + issue, 'hook_event_name': event, 'prompt': args[-1]}
+    if event == 'SessionStart':
+        # Another conversation arrives first, in the same worktree.
+        foreign = dict(payload, session_id='unrelated-thread')
+        subprocess.run(command, input=json.dumps(foreign), text=True, shell=True, check=True)
+        foreign.update(hook_event_name='UserPromptSubmit', prompt='Unrelated work')
+        subprocess.run(command, input=json.dumps(foreign), text=True, shell=True, check=True)
     subprocess.run(command, input=json.dumps(payload), text=True, shell=True, check=True)
 (root / ('ready-' + issue)).touch()
 print('Codex chat ready', flush=True)
@@ -107,7 +113,8 @@ PY
 
 hook_event() {
   jq -n --arg event "$1" --arg cwd "$TEST_ROOT/worktrees/$run/issue-12" --arg thread "${2:-thread-12}" \
-    '{cwd:$cwd,session_id:$thread,hook_event_name:$event}' | "$script" hook >/dev/null
+    --arg source "${3:-startup}" \
+    '{cwd:$cwd,session_id:$thread,hook_event_name:$event,source:$source}' | "$script" hook >/dev/null
 }
 assert_state() {
   [[ "$(cat "$run_dir/prompts/issue-12.state")" == "$1" ]]
@@ -125,6 +132,13 @@ assert_state blocked
 [[ "$(tmux show-options -wqv -t "$pane" window-status-current-style)" == fg=black,bg=yellow,bold ]]
 hook_event UserPromptSubmit wrong-thread
 assert_state blocked
+# A second startup, clear, resume, or compaction cannot steal registration.
+for source in startup clear resume compact; do
+  hook_event SessionStart wrong-thread "$source"
+  hook_event UserPromptSubmit wrong-thread
+  assert_state blocked
+  [[ "$(cat "$run_dir/prompts/issue-12.session")" == thread-12 ]]
+done
 # Native queue must preserve literal multiline text and must not claim consumption.
 message=$'Please check $HOME and `uname` literally\nThen check "Windows".'
 "$script" send "$run" 12 "$message" >/dev/null
@@ -146,8 +160,23 @@ rm "$TEST_ROOT/reject-queue"
 rm "$run_dir/prompts/issue-12.session"
 if "$script" send "$run" 12 nope >/dev/null 2>&1; then exit 1; fi
 hook_event SessionStart
+[[ ! -e "$run_dir/prompts/issue-12.session" ]]
+"$script" bind "$run" 12 replacement-thread >/dev/null
+hook_event SessionStart
+"$script" send "$run" 12 rebound >/dev/null
+python3 - "$TEST_ROOT/queue.json" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1])) == ['queue', '--thread', 'replacement-thread', '--message', 'rebound']
+PY
+if "$script" bind "$run" 12 '../bad' >/dev/null 2>&1; then exit 1; fi
+"$script" bind "$run" 12 thread-12 >/dev/null
 tmux set-option -w -t "$pane" @codex_issue unrelated
 if "$script" send "$run" 12 nope >/dev/null 2>&1; then exit 1; fi
+if "$script" bind "$run" 12 wrong-thread >/dev/null 2>&1; then exit 1; fi
+if "$script" show "$run" 12 >/dev/null 2>&1; then exit 1; fi
+if "$script" attach "$run" 12 >/dev/null 2>&1; then exit 1; fi
+if "$script" attach "$run" >/dev/null 2>&1; then exit 1; fi
+"$script" status "$run" | grep -E '#12[[:space:]]+waiting[[:space:]]+-' >/dev/null
 "$script" mark "$run" 12 "done"
 [[ "$(tmux display-message -p -t "$pane" '#{window_name}')" == '#12 waiting' ]]
 tmux set-option -w -t "$pane" @codex_issue "$run_dir/12"
@@ -185,8 +214,29 @@ assert all('model_reasoning_effort' not in config and 'agents' not in config for
 PY
 printf '0\n' > "$TEST_ROOT/exit-56"
 wait_for grep -qx closed "$CODEX_ISSUES_STATE_ROOT/$run/prompts/issue-56.state"
+# Simulate a server restart reusing the pane ID for an unrelated live process.
+pane="$(awk -F '\t' '$1 == 56 {print $3}' "$CODEX_ISSUES_STATE_ROOT/$run/workers.tsv")"
+wait_for pane_dead
+tmux set-option -w -t "$pane" @codex_issue unrelated
+tmux respawn-pane -t "$pane" 'sleep 60'
+"$script" status "$run" | grep -E '#56[[:space:]]+closed[[:space:]]+-' >/dev/null
 "$script" cleanup "$run" >/dev/null
+[[ "$(tmux display-message -p -t "$pane" '#{pane_dead}')" == 0 ]]
+tmux kill-pane -t "$pane"
 tmux has-session -t container
+# Relative roots (including spaces) are resolved before changing into worktrees.
+output="$(cd "$TEST_ROOT/repo" && env -u TMUX CODEX_ISSUES_STATE_ROOT='../relative state' \
+  CODEX_ISSUES_WORKTREE_ROOT='../relative worktrees' "$script" start 78)"
+run="$(awk '/^run: / {print $2}' <<< "$output")"
+wait_for test -f "$TEST_ROOT/ready-78"
+relative_run="$TEST_ROOT/relative state/$run"
+[[ "$(cat "$relative_run/prompts/issue-78.session")" == thread-78 ]]
+CODEX_ISSUES_STATE_ROOT="$TEST_ROOT/relative state" "$script" send "$run" 78 relative >/dev/null
+printf '0\n' > "$TEST_ROOT/exit-78"
+pane="$(awk -F '\t' '{print $3}' "$relative_run/workers.tsv")"
+wait_for pane_dead
+(cd "$TEST_ROOT" && CODEX_ISSUES_STATE_ROOT='relative state' "$script" cleanup "$run" >/dev/null)
+[[ ! -e "$relative_run" && ! -e "$TEST_ROOT/relative worktrees/$run" ]]
 if (cd "$TEST_ROOT/repo" && "$script" start --effort enormous 57) >/dev/null 2>&1; then exit 1; fi
 if (cd "$TEST_ROOT/repo" && "$script" start --subagent-effort enormous 57) >/dev/null 2>&1; then exit 1; fi
 if (cd "$TEST_ROOT/repo" && "$script" start --model) >/dev/null 2>&1; then exit 1; fi

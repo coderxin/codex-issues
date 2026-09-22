@@ -1,0 +1,25 @@
+name: Regression tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux jq
+          python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+      - name: Run regression test
+        run: bash tests/test-codex-issues.sh

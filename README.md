@@ -94,13 +94,21 @@ codex-issues start --model <model-id> --effort high \
 
 Working is blue, waiting/blocked yellow, done green, error red, and closed gray. A green window reports the worker's assessment; check the acceptance criteria and delivery evidence before treating it as complete.
 
-On first use, inspect and trust the launcher's hooks in `/hooks`: SessionStart, UserPromptSubmit, Stop, and Interrupt. Moving the script or changing the state directory may require trust again. A missing session ID during `send` usually requires reviewing hooks and restarting or clearing the worker conversation.
+On first use, inspect and trust the launcher's hooks in `/hooks`: SessionStart, UserPromptSubmit, Stop, and Interrupt. Moving the script or changing the state directory may require trust again. The worker binds to the session receiving the launcher's initial prompt; another conversation starting in the same worktree cannot replace that binding.
+
+If the initial prompt ran before hooks were trusted, or you deliberately replace the conversation with `/clear` or resume another session, inspect the intended worker's session ID and bind it explicitly:
+
+```bash
+codex-issues bind <run> <issue> <session-id>
+```
+
+Use the ID from the intended conversation, not another session sharing its worktree. Binding changes only the message destination; it does not assert that a turn is active or complete.
 
 GitHub ownership and progress updates depend on project instructions. The script does not assign issues, lock ownership, or prevent two supervisors from choosing the same issue.
 
 ## Cleanup
 
-After verifying delivery and preserving commits remotely, exit the worker sessions and run:
+After verifying delivery and preserving commits remotely, attach to each worker and enter `/quit` at its idle Codex prompt. A `done` marker does not exit the interactive session. Confirm `status` shows `-` in the PROCESS column for each worker, then run:
 
 ```bash
 codex-issues cleanup <run>
@@ -108,9 +116,12 @@ codex-issues cleanup <run>
 
 Cleanup refuses active workers and dirty worktrees. It removes the run's stopped windows, worktrees, and metadata, but retains branches. A clean worktree alone does not prove commits were pushed or merged; check before cleanup.
 
-State defaults to `$XDG_STATE_HOME/codex-issues` (or `~/.local/state/codex-issues`). Worktrees default to a sibling `.codex-issue-worktrees` directory. Override them with `CODEX_ISSUES_STATE_ROOT` and `CODEX_ISSUES_WORKTREE_ROOT`.
+State defaults to `$XDG_STATE_HOME/codex-issues` (or `~/.local/state/codex-issues`). Worktrees default to a sibling `.codex-issue-worktrees` directory. Override them with `CODEX_ISSUES_STATE_ROOT` and `CODEX_ISSUES_WORKTREE_ROOT`. Relative overrides resolve from the launch directory and are stored as absolute paths for workers and cleanup. Later commands must point to the same state directory.
 
 ## Tests
+
+GitHub Actions runs the regression test on Ubuntu for pull requests and pushes to
+`main`, with read-only repository permissions and no model API credentials.
 
 ```bash
 bash tests/test-codex-issues.sh

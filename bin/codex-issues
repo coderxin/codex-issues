@@ -14,6 +14,7 @@ Usage:
   codex-issues show <run> <issue>
   codex-issues attach <run> [issue]
   codex-issues send <run> <issue> <message...>
+  codex-issues bind <run> <issue> <session-id>
   codex-issues mark <run> <issue> <done|blocked>
   codex-issues cleanup <run>
 
@@ -57,6 +58,11 @@ worker_row() {
   awk -F '\t' -v issue="$issue" '$1 == issue { print; found=1; exit } END { exit !found }' "$RUN_DIR/workers.tsv"
 }
 
+owns_worker() {
+  [[ "$pane_id" =~ ^%[0-9]+$ ]] &&
+    [[ "$(tmux show-options -wqv -t "$pane_id" @codex_issue 2>/dev/null)" == "$RUN_DIR/$issue" ]]
+}
+
 # Scope styling to our windows and fence tmux IDs against server restarts.
 paint_worker() {
   local state="$1" color
@@ -67,7 +73,7 @@ paint_worker() {
     error) color=red ;;
     *) color=colour247 ;;
   esac
-  [[ "$(tmux show-options -wqv -t "$pane_id" @codex_issue 2>/dev/null)" == "$RUN_DIR/$issue" ]] || return 0
+  owns_worker || return 0
   tmux rename-window -t "$pane_id" "#$issue $state"
   tmux set-option -w -t "$pane_id" window-status-style "fg=$color"
   tmux set-option -w -t "$pane_id" window-status-current-style "fg=black,bg=$color,bold"
@@ -102,14 +108,18 @@ hook() {
     [[ -n "$row" ]] || continue
     RUN_DIR="$(cd "$path" && pwd -P)"
     IFS=$'\t' read -r issue window_id pane_id worktree branch url <<< "$row"
-    if [[ "$event" == SessionStart ]]; then
+    # Only the launcher's exact initial prompt may claim an unbound worker.
+    # SessionStart alone cannot distinguish another conversation in this cwd.
+    if [[ ! -f "$RUN_DIR/prompts/issue-$issue.session" && "$event" == UserPromptSubmit ]] &&
+      [[ "$(jq -r '.prompt // ""' <<< "$payload")" == "$(<"$RUN_DIR/prompts/issue-$issue.txt")" ]]; then
       tmp="$(mktemp "$RUN_DIR/prompts/issue-$issue.session.XXXXXX")"
       printf '%s\n' "$thread" > "$tmp"
-      mv "$tmp" "$RUN_DIR/prompts/issue-$issue.session"
-    else
-      [[ -f "$RUN_DIR/prompts/issue-$issue.session" ]] || continue
-      [[ "$(<"$RUN_DIR/prompts/issue-$issue.session")" == "$thread" ]] || continue
+      # Atomic first registration: concurrent hooks must not replace the winner.
+      ln "$tmp" "$RUN_DIR/prompts/issue-$issue.session" 2>/dev/null || true
+      rm "$tmp"
     fi
+    [[ -f "$RUN_DIR/prompts/issue-$issue.session" ]] || continue
+    [[ "$(<"$RUN_DIR/prompts/issue-$issue.session")" == "$thread" ]] || continue
     read_state
     case "$event" in
       SessionStart) ;; # Startup/compaction does not establish a task outcome.
@@ -210,6 +220,8 @@ start() {
   repo_name="$(printf '%s' "$(basename "$repo_root")" | tr -cs 'A-Za-z0-9._-' '-')"
   stamp="$(date +%Y%m%d-%H%M%S)"
   run="${repo_name}-${stamp}-$$"
+  mkdir -p "$STATE_ROOT"
+  STATE_ROOT="$(cd "$STATE_ROOT" && pwd -P)"
   run_path="$(run_dir "$run")"
 
   if [[ -n "${TMUX:-}" ]]; then
@@ -223,6 +235,7 @@ start() {
   local worktree_parent
   worktree_parent="${WORKTREE_ROOT:-$(dirname "$repo_root")/.codex-issue-worktrees}/$run"
   mkdir -p "$run_path/prompts" "$worktree_parent"
+  worktree_parent="$(cd "$worktree_parent" && pwd -P)"
   printf '%s\t%s\t%s\n' "$session" "$repo_root" "$worktree_parent" > "$run_path/meta"
   : > "$run_path/workers.tsv"
   printf '%s\n' "$codex_bin" > "$run_path/codex"
@@ -319,7 +332,8 @@ status_run() {
   local issue window_id pane_id worktree branch url process changes state
   printf '%-8s  %-10s  %-12s  %-7s  %s\n' ISSUE STATE PROCESS CHANGES WORKTREE
   while IFS=$'\t' read -r issue window_id pane_id worktree branch url; do
-    if process="$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null)"; then
+    if owns_worker && [[ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}')" == 0 ]] &&
+      process="$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null)"; then
       read_state
     else
       read_state
@@ -339,6 +353,7 @@ show_worker() {
   local row issue window_id pane_id worktree branch url
   row="$(worker_row "$1")" || die "issue not found in run: $1"
   IFS=$'\t' read -r issue window_id pane_id worktree branch url <<< "$row"
+  owns_worker || die "issue #$issue no longer owns its pane"
   tmux capture-pane -p -t "$pane_id" -S -100 2>/dev/null || die "issue #$issue is no longer running"
 }
 
@@ -350,7 +365,9 @@ attach_run() {
     row="$(head -n 1 "$RUN_DIR/workers.tsv")"
   fi
   IFS=$'\t' read -r issue window_id pane_id worktree branch url <<< "$row"
-  tmux select-window -t "$window_id" 2>/dev/null || die "issue #$issue is no longer running"
+  owns_worker || die "issue #$issue no longer owns its pane"
+  SESSION="$(tmux display-message -p -t "$pane_id" '#{session_id}')"
+  tmux select-window -t "$pane_id" 2>/dev/null || die "issue #$issue is no longer running"
   if [[ -n "${TMUX:-}" ]]; then
     exec tmux switch-client -t "$SESSION"
   fi
@@ -363,14 +380,27 @@ send_worker() {
   shift
   row="$(worker_row "$target_issue")" || die "issue not found in run: $target_issue"
   IFS=$'\t' read -r issue window_id pane_id worktree branch url <<< "$row"
-  [[ "$(tmux show-options -wqv -t "$pane_id" @codex_issue 2>/dev/null)" == "$RUN_DIR/$issue" ]] || die "issue #$issue is no longer running"
+  owns_worker || die "issue #$issue is no longer running"
   [[ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}')" == 0 ]] || die "issue #$issue has exited"
-  [[ -f "$RUN_DIR/prompts/issue-$issue.session" ]] || die "session ID unavailable; review launcher hooks in /hooks in issue #$issue, then restart or /clear the chat"
+  [[ -f "$RUN_DIR/prompts/issue-$issue.session" ]] || die "session ID unavailable; trust launcher hooks in /hooks, then bind this worker to its session ID"
   read -r thread < "$RUN_DIR/prompts/issue-$issue.session"
   [[ "$thread" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid session ID for issue #$issue"
   read -r codex_bin < "$RUN_DIR/codex"
   "$codex_bin" queue --thread "$thread" --message "$*"
   printf 'queued message for issue #%s\n' "$issue"
+}
+
+bind_worker() {
+  [[ $# -eq 2 && "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "bind requires an issue and valid session ID"
+  local row issue window_id pane_id worktree branch url tmp
+  row="$(worker_row "$1")" || die "issue not found in run: $1"
+  IFS=$'\t' read -r issue window_id pane_id worktree branch url <<< "$row"
+  owns_worker || die "issue #$issue no longer owns its pane"
+  [[ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}')" == 0 ]] || die "issue #$issue has exited"
+  tmp="$(mktemp "$RUN_DIR/prompts/issue-$issue.session.XXXXXX")"
+  printf '%s\n' "$2" > "$tmp"
+  mv "$tmp" "$RUN_DIR/prompts/issue-$issue.session"
+  printf 'bound issue #%s to session %s\n' "$issue" "$2"
 }
 
 mark_worker() {
@@ -385,7 +415,7 @@ mark_worker() {
 cleanup_run() {
   local issue window_id pane_id worktree branch url dirty blocked=0
   while IFS=$'\t' read -r issue window_id pane_id worktree branch url; do
-    if [[ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}' 2>/dev/null)" == 0 ]]; then
+    if owns_worker && [[ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}' 2>/dev/null)" == 0 ]]; then
       printf 'codex-issues: issue #%s is still running; exit its Codex window first\n' "$issue" >&2
       blocked=1
     elif [[ -d "$worktree" ]]; then
@@ -399,12 +429,12 @@ cleanup_run() {
   [[ "$blocked" -eq 0 ]] || die "cleanup refused; running or dirty workers remain"
 
   while IFS=$'\t' read -r issue window_id pane_id worktree branch url; do
-    if [[ -d "$worktree" ]]; then
-      git -C "$REPO_ROOT" worktree remove "$worktree"
-    fi
-    if [[ "$(tmux show-options -wqv -t "$pane_id" @codex_issue 2>/dev/null)" == "$RUN_DIR/$issue" ]]; then
+    if owns_worker; then
       [[ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}')" == 1 ]] || die "issue #$issue became active during cleanup"
       tmux kill-pane -t "$pane_id"
+    fi
+    if [[ -d "$worktree" ]]; then
+      git -C "$REPO_ROOT" worktree remove "$worktree"
     fi
     rm -f "$RUN_DIR/prompts/issue-$issue.txt" "$RUN_DIR/prompts/issue-$issue.state" "$RUN_DIR/prompts/issue-$issue.session"
   done < "$RUN_DIR/workers.tsv"
@@ -434,7 +464,7 @@ case "$command" in
     [[ $# -eq 1 ]] || die "list takes no arguments"
     list_runs
     ;;
-  status|show|attach|send|mark|cleanup)
+  status|show|attach|send|bind|mark|cleanup)
     shift
     [[ $# -gt 0 ]] || die "$command requires a run name"
     run="$1"
@@ -445,6 +475,7 @@ case "$command" in
       show) [[ $# -eq 1 ]] || die "show requires an issue"; show_worker "$1" ;;
       attach) [[ $# -le 1 ]] || die "attach accepts at most one issue"; attach_run "$@" ;;
       send) send_worker "$@" ;;
+      bind) bind_worker "$@" ;;
       mark) mark_worker "$@" ;;
       cleanup) [[ $# -eq 0 ]] || die "cleanup takes only a run name"; cleanup_run ;;
     esac
