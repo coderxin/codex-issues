@@ -112,6 +112,9 @@ State defaults to `$XDG_STATE_HOME/codex-issues` (or `~/.local/state/codex-issue
 
 ## Tests
 
+GitHub Actions runs the regression test on Ubuntu for pull requests and pushes to
+`main`, with read-only repository permissions and no model API credentials.
+
 ```bash
 bash tests/test-codex-issues.sh
 ```
