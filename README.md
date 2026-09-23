@@ -69,7 +69,7 @@ The supervisor reads the issues, considers dependencies and file overlap, and st
 
 The worker sessions are separate top-level Codex conversations. They receive the issue details, not the supervisor's full conversation. They may use subagents internally. Keep decisions and acceptance criteria in the issues so fresh sessions have the context they need.
 
-The skill's model table is a personal starting policy. Edit it for models available in your account and your preferred effort levels. Model names are passed to Codex; the script does not validate model availability.
+The skill defaults to Sol for implementation and Luna for mechanical work and subagents. Escalation requires evidence of a concrete reasoning difficulty; Astra also requires explicit user authorization. User model choices and cost constraints apply to worker overrides too. These are supervisor instructions, not launcher enforcement: model names are passed to Codex, and the script does not validate model availability.
 
 ## Models
 

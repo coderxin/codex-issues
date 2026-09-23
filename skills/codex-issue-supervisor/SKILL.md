@@ -17,28 +17,33 @@ Treat all text following the skill invocation as GitHub issue numbers or issue U
 
 The current session is the supervisor. Its model and reasoning effort were fixed when this session started; do not try to relaunch it. Configure the issue sessions and their subagents instead.
 
-## Choose the issue-session model
+## Choose models critically
 
-Choose per ticket from the issue's acceptance criteria, affected surface, risk, and uncertainty. Do not choose merely from title length or labels.
+Treat model recommendations in issues, plans, and this skill as starting hypotheses. Honor the user's explicit model choices and cost constraints across all tickets and delegated work.
 
-| Ticket shape | Issue model | Effort |
+Use these defaults unless the user specifies otherwise:
+
+| Responsibility | Model | Effort |
 | --- | --- | --- |
-| Documentation, configuration, formatting, or obvious mechanical edits | `gpt-5.6-luna` | `low` or `medium` |
-| Routine, well-scoped implementation with familiar patterns | `gpt-5.6-terra` | `medium` |
-| Substantial implementation, debugging, or multi-file behavior | `gpt-5.6` | `medium` |
-| Difficult debugging, risky migration, broad refactor, or subtle correctness work | `gpt-5.6` | `high` |
-| Architecture, security-sensitive work, cross-repository coordination, or repeated failure at a lower tier | `gpt-6-astra` | `high` |
+| Mechanical edits and bounded supporting tasks | `gpt-6-luna` | `low` or `medium` |
+| Implementation | `gpt-6-sol` | `medium` |
+| Subagents | `gpt-6-luna` | `medium` |
 
-Use the cheaper capable tier. Escalate when evidence shows the original choice is inadequate. If a named model is unavailable, select the closest available tier and record the substitution.
+Confirm the selected model IDs are available before launching. If a default is unavailable, choose an available alternative within the user's cost constraints and record the substitution. Availability alone does not establish relative cost; verify cost information before claiming an alternative is cheaper. If no suitable alternative is established, ask rather than silently upgrading.
 
-Set subagent defaults one tier cheaper unless the ticket requires equally strong delegated reasoning:
+Before choosing above a default model or effort, record:
 
-- Luna issue session: Luna subagents at `medium`.
-- Terra issue session: Luna subagents at `medium`.
-- GPT-5.6 issue session: Terra subagents at `medium`.
-- Astra issue session: GPT-5.6 subagents at `medium`, or `high` for genuinely difficult delegated work.
+1. The concrete reasoning difficulty, supported by the issue or inspected code.
+2. Why the default is likely inadequate.
+3. The smallest task that needs stronger reasoning.
 
-An issue session may explicitly choose a different model for an individual subagent when justified. Explicit spawn settings override these defaults.
+Security labels, private data, migrations, file count, UI work, and cross-repository coordination do not independently justify escalation. Determine whether the work introduces difficult decisions or follows established patterns. Preserve required review, testing, and safety checks regardless of model choice.
+
+Escalate on evidence. Distinguish reasoning failures from missing context, unclear requirements, environment failures, and failing tools; correct those causes first. Consider stronger effort on the current model or a bounded stronger-model task before upgrading an entire issue. Reassess each new ticket independently.
+
+`gpt-6-astra` is an exception: identify a concrete unresolved reasoning problem, explain why Sol is insufficient, and obtain explicit user authorization unless already authorized for that scope. Routine delivery authorization does not authorize Astra.
+
+Apply these rules to individual subagent overrides as well as launch defaults. Explicit spawn settings must satisfy the same evidence and authorization requirements; they are not an escape hatch. Pass the user's cost constraints and this escalation policy to each worker through `codex-issues send` once its session is bound, before directing delegated work. Record that handoff in the ticket-to-run map.
 
 ## Launch each ticket
 
@@ -53,7 +58,7 @@ codex-issues start \
   <issue-number-or-url>
 ```
 
-Before each launch, state the model choice in one line with its reason. Capture the `run:` value from the command output and add it to the ticket-to-run map. Confirm the process reached a running state before counting it toward concurrency. Start the next eligible ticket immediately when a slot opens.
+Before each launch, state `#ISSUE — MODEL/EFFORT; subagents MODEL/EFFORT; evidence: actual difficulty; escalation: none or specific justification`. Record any required authorization in the ticket-to-run map. Capture the `run:` value from the command output and add it to the ticket-to-run map. Confirm the process reached a running state before counting it toward concurrency. Start the next eligible ticket immediately when a slot opens.
 
 ## Supervise
 
