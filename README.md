@@ -65,11 +65,22 @@ Invoke the skill from the target repository:
 $codex-issue-supervisor 123 124 125
 ```
 
-The supervisor reads the issues, considers dependencies and file overlap, and starts each eligible ticket with a separate command. It defaults to three concurrent workers and requests progress checks every 30 minutes. These are agent instructions, not a durable scheduler; the supervisor must remain active and have a suitable goal or waiting mechanism.
+The supervisor starts up to three workers concurrently, with scope, cost and verification instructions in their initial prompts. It serializes actual dependencies while allowing independent inspection and implementation to proceed. Workers notify the supervisor through Codex's native session queue, so an idle supervisor can resume on outcomes rather than repeatedly poll. A periodic checkpoint requires a separate durable scheduler; the launcher does not provide one.
 
-The worker sessions are separate top-level Codex conversations. They receive the issue details, not the supervisor's full conversation. They may use subagents internally. Keep decisions and acceptance criteria in the issues so fresh sessions have the context they need.
+The worker sessions are separate top-level Codex conversations. They receive the issue details and explicit startup instructions, not the supervisor's full conversation. They may use subagents internally. Keep decisions and acceptance criteria in the issues so fresh sessions have the context they need.
 
 The skill's model table is a personal starting policy. Edit it for models available in your account and your preferred effort levels. Model names are passed to Codex; the script does not validate model availability.
+
+## Startup instructions and notifications
+
+```bash
+codex-issues start --instructions-file ./worker-instructions.md \
+  --supervisor-thread <supervisor-session-id> 123
+```
+
+The instructions file is copied into each initial prompt before work starts. Use it for scope, cost constraints and file ownership; later `send` messages may wait until the current turn ends. The file can be removed after startup.
+
+Notifications identify the run, issue and reported outcome. Repeated outcomes within a turn are suppressed. A queue failure is reported without changing the worker's outcome; notification can be retried by marking the outcome again. Inspect current evidence before acting on a notification. Omit `--supervisor-thread` for manual runs.
 
 ## Models
 

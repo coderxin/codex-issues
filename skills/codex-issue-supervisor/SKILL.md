@@ -12,78 +12,79 @@ Treat all text following the skill invocation as GitHub issue numbers or issue U
 1. Work from the target repository. If an issue number could refer to more than one repository and the current repository does not resolve it, ask one concise question before launching anything.
 2. Confirm `codex-issues` and `gh` are available. Read each issue with `gh issue view` before choosing its execution order or model.
 3. Create one persistent goal covering all supplied tickets. Do not set a token budget unless the user supplied one.
-4. Record dependencies, likely file overlap, deployment coupling, and exclusive resources. Run independent tickets concurrently, up to three active tickets by default. Serialize tickets that depend on or are likely to conflict with one another.
-5. Maintain a ticket-to-run map containing the issue, launch command, chosen models and efforts, run ID, state, PR, and verification evidence.
+4. Run independent work concurrently, up to three active tickets. File overlap calls for explicit ownership and final integration, not postponing an entire ticket. Start inspection and non-conflicting implementation immediately; serialize only edits or releases that actually depend on another ticket.
+5. Keep one ticket-to-run map with issue, launch command, models, run/thread IDs, state, PR, current check/deployment handles, and evidence. Reuse it instead of adding parallel progress records.
 
 The current session is the supervisor. Its model and reasoning effort were fixed when this session started; do not try to relaunch it. Configure the issue sessions and their subagents instead.
 
-## Choose the issue-session model
+## Choose models critically
 
-Choose per ticket from the issue's acceptance criteria, affected surface, risk, and uncertainty. Do not choose merely from title length or labels.
+Treat model recommendations in issues, plans, and this skill as starting hypotheses. Honor the user's explicit model choices and cost constraints across all tickets and delegated work.
 
-| Ticket shape | Issue model | Effort |
+Use these defaults unless the user specifies otherwise:
+
+| Responsibility | Model | Effort |
 | --- | --- | --- |
-| Documentation, configuration, formatting, or obvious mechanical edits | `gpt-5.6-luna` | `low` or `medium` |
-| Routine, well-scoped implementation with familiar patterns | `gpt-5.6-terra` | `medium` |
-| Substantial implementation, debugging, or multi-file behavior | `gpt-5.6` | `medium` |
-| Difficult debugging, risky migration, broad refactor, or subtle correctness work | `gpt-5.6` | `high` |
-| Architecture, security-sensitive work, cross-repository coordination, or repeated failure at a lower tier | `gpt-6-astra` | `high` |
+| Mechanical edits and bounded supporting tasks | `gpt-6-luna` | `low` or `medium` |
+| Implementation | `gpt-6-sol` | `medium` |
+| Subagents | `gpt-6-luna` | `medium` |
 
-Use the cheaper capable tier. Escalate when evidence shows the original choice is inadequate. If a named model is unavailable, select the closest available tier and record the substitution.
+Confirm the selected model IDs are available before launching. If a default is unavailable, choose an available alternative within the user's cost constraints and record the substitution. Availability alone does not establish relative cost; verify cost information before claiming an alternative is cheaper. If no suitable alternative is established, ask rather than silently upgrading.
 
-Set subagent defaults one tier cheaper unless the ticket requires equally strong delegated reasoning:
+Before choosing above a default model or effort, record:
 
-- Luna issue session: Luna subagents at `medium`.
-- Terra issue session: Luna subagents at `medium`.
-- GPT-5.6 issue session: Terra subagents at `medium`.
-- Astra issue session: GPT-5.6 subagents at `medium`, or `high` for genuinely difficult delegated work.
+1. The concrete reasoning difficulty, supported by the issue or inspected code.
+2. Why the default is likely inadequate.
+3. The smallest task that needs stronger reasoning.
 
-An issue session may explicitly choose a different model for an individual subagent when justified. Explicit spawn settings override these defaults.
+Security labels, private data, migrations, file count, UI work, and cross-repository coordination do not independently justify escalation. Determine whether the work introduces difficult decisions or follows established patterns. Preserve required review, testing, and safety checks regardless of model choice.
+
+Escalate on evidence. Distinguish reasoning failures from missing context, unclear requirements, environment failures, and failing tools; correct those causes first. Consider stronger effort on the current model or a bounded stronger-model task before upgrading an entire issue. Reassess each new ticket independently.
+
+`gpt-6-astra` is an exception: identify a concrete unresolved reasoning problem, explain why Sol is insufficient, and obtain explicit user authorization unless already authorized for that scope. Routine delivery authorization does not authorize Astra.
+
+Apply these rules to individual subagent overrides as well as launch defaults. Explicit spawn settings must satisfy the same evidence and authorization requirements; they are not an escape hatch. Include the user's cost constraints and this escalation policy in the initial worker instructions. `send` queues a later turn; it does not establish that a running worker has read the message.
 
 ## Launch each ticket
 
-Use exactly one `codex-issues start` invocation per issue, even when several tickets share the same settings:
+Prepare one short instructions file before launch. Include the user's scope and cost constraints, model escalation policy, overlapping-file ownership, and these execution rules:
+
+- Use the smallest complete implementation and the repository's authoritative check selection. Inspect selection before launching checks. Broad regression needs a concrete changed-behavior reason or an automatic requirement; a sensitive label alone is insufficient.
+- Reuse passing tests and review while relevant inputs are unchanged. Fix acceptance and safety blockers; leave optional polish out.
+- Start each external command once and retain its handle. A queued job or watcher timeout is a waiting state, not a test failure or a request to restart work.
+- Before marking blocked, inspect the current PR head and current run. A superseded failure does not block a passing current run. Preserve required gates and other sessions' jobs.
+- Report milestones, decisions, failures and completion; omit unchanged heartbeat narration.
+
+Use exactly one `codex-issues start` per issue. Pass the instructions and the current supervisor session ID at startup:
 
 ```bash
 codex-issues start \
-  --model <issue-model> \
-  --effort <issue-effort> \
-  --subagent-model <subagent-model> \
-  --subagent-effort <subagent-effort> \
+  --model <issue-model> --effort <issue-effort> \
+  --subagent-model <subagent-model> --subagent-effort <subagent-effort> \
+  --instructions-file <path> --supervisor-thread <current-session-id> \
   <issue-number-or-url>
 ```
 
-Before each launch, state the model choice in one line with its reason. Capture the `run:` value from the command output and add it to the ticket-to-run map. Confirm the process reached a running state before counting it toward concurrency. Start the next eligible ticket immediately when a slot opens.
+Confirm these options with the installed launcher's help. A launcher without startup instructions or notifications needs a capability correction before supervised work begins; do not substitute a late queued policy message. Use the actual session ID, never a guessed ID. Record the instructions file as owned and remove it once all launches have copied it.
 
-## Supervise
+Before launch, state `#ISSUE — MODEL/EFFORT; subagents MODEL/EFFORT; evidence: actual difficulty; escalation: none or specific justification`. Capture the `run:` value, confirm the worker is running, and record its session ID. Start the next eligible ticket immediately.
 
-After initial launch verification, inspect active runs every 30 minutes using the available recurring goal, monitoring, or wait mechanism. Do not implement a blocking `sleep 1800` loop. Also react immediately to completion, errors, or user input.
+## Supervise on events
 
-Use:
+The launcher queues a notification to the supervisor when a worker reports done, blocked, waiting, or exits. Verify notification support during launch. After dispatch, return control so queued notifications can resume an idle supervisor. An active goal records unfinished work; it does not require a model to remain in a wait loop.
 
-```bash
-codex-issues status <run>
-codex-issues show <run> <issue>
-codex-issues send <run> <issue> <message...>
-```
+Use `codex-issues status`, `show`, and `send` for the specific run and issue named in a notification. Treat notifications as prompts to inspect current state, not proof of completion. React to user input immediately. Use a 30-minute checkpoint only through an available durable scheduler; never approximate it with repeated one-minute model/tool waits. If automatic wakeup is unavailable, report that limitation and preserve a resumable handoff rather than claim unattended supervision.
 
-- Inspect `show` when a ticket is waiting, blocked, errored, unexpectedly idle, or claims completion.
-- Use `send` to answer questions, correct scope, provide missing context, or request specific verification.
-- Do not restart a failed run blindly. Diagnose its state first and preserve any worktree or uncommitted work.
-- Do not take over ticket implementation merely because progress is slow. Repair or steer the worker unless direct intervention is necessary to recover the supervision mechanism.
+- Initial constraints belong in the launch prompt. For later steering, `send` only confirms enqueueing. Check that the worker consumed a correction before relying on it. For an urgent correction, use a supported interrupt-and-steer mechanism after preserving live command handles; do not cancel deployments or tests blindly.
+- One bounded external watcher owns an unresolved CI/deployment wait. Prefer its completion notification to both supervisor and worker polling the same job. If a worker hands off a pending run, transfer that watcher handle rather than start duplicate watchers.
+- On a timeout, inspect the recorded run once. Distinguish real failures, an occupied required runner, and superseded work. Preserve healthy queued work. Cancel only verified owned superseded runs with safe teardown; never cancel another session's work or bypass required checks.
+- Keep the issue's scope fixed once acceptance is met. Correct an unnecessary manual full-suite override using the authoritative selector; retain automatically required checks. Record unrelated reproduced baseline failures separately without adopting their repair.
+- Integrate current main before final verification and preserve valid evidence. When several approved tickets are ready together, merge under repository rules and use one canonical deployment covering them where supported. Do not hold a ready release for an unfinished ticket.
+- Steer the worker rather than take over because it is slow. Use direct intervention only to recover the supervision mechanism or resolve a concrete delivery blocker.
 
 ## Verify completion
 
-A worker saying “done” is not sufficient. Verify the issue's acceptance criteria, relevant tests, review and CI status, PR merge, default-branch state, deployment when applicable, and production behavior when applicable. Ensure resources owned by the ticket session are cleaned without touching resources belonging to other sessions.
-
-## Exit workers and clean up
-
-After verifying delivery and confirming commits are preserved remotely:
-
-1. Inspect `status` and `show` for each worker. `done` is an outcome marker; its interactive Codex process may still be running.
-2. For each live worker, hand off to the user with the exact `codex-issues attach <run> <issue>` command and ask them to enter `/quit` at the idle Codex prompt. Keep the run map and verification evidence while awaiting their return. The launcher has no unattended shutdown command; `send` queues a model message and cannot execute `/quit` as a terminal command. Preserve the worktree and report cleanup as pending until exit is confirmed.
-3. Recheck `codex-issues status <run>`. When every worker's PROCESS column is `-`, run `codex-issues cleanup <run>`. If cleanup refuses, inspect the reported active process or dirty worktree and preserve it until resolved.
-4. Confirm the run is absent from `codex-issues list` and its recorded worktree paths no longer exist. Retained branches are intentional.
+Verify the issue's acceptance criteria against retained test/review evidence, required current-revision CI, merged default-branch state, and the canonical deployment result when applicable. A structured deployment pass supplies its production checks; rerun only missing or invalid evidence. Verify owned cleanup, exit completed worker sessions, and clean their launcher runs while preserving other sessions' resources.
 
 Keep the goal active while any ticket remains queued, running, blocked but recoverable, unverified, unmerged, undeployed when deployment is required, or not cleaned up. Mark the goal complete only when every supplied ticket is verified and no managed session remains active.
 
