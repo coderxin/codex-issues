@@ -11,7 +11,7 @@ Treat all text following the skill invocation as GitHub issue numbers or issue U
 
 1. Work from the target repository. If an issue number could refer to more than one repository and the current repository does not resolve it, ask one concise question before launching anything.
 2. Confirm `codex-issues` and `gh` are available. Read each issue with `gh issue view` before choosing its execution order or model.
-3. Create one persistent goal covering all supplied tickets. Do not set a token budget unless the user supplied one.
+3. If the client supports persistent goals, create one covering the supplied tickets. Otherwise retain the ticket-to-run map as the resumable record. Do not set a token budget unless the user supplied one.
 4. Run independent work concurrently, up to three active tickets. File overlap calls for explicit ownership and final integration, not postponing an entire ticket. Start inspection and non-conflicting implementation immediately; serialize only edits or releases that actually depend on another ticket.
 5. Keep one ticket-to-run map with issue, launch command, models, run/thread IDs, state, PR, current check/deployment handles, and evidence. Reuse it instead of adding parallel progress records.
 
@@ -65,6 +65,8 @@ codex-issues start \
   <issue-number-or-url>
 ```
 
+Preserve the user’s configured approval and sandbox policy. Never add `--yolo` unless the user explicitly authorizes unrestricted workers for this run. If a worker cannot update launcher state under its permissions, inspect the outcome and mark it from the supervisor instead of broadening access.
+
 Confirm these options with the installed launcher's help. A launcher without startup instructions or notifications needs a capability correction before supervised work begins; do not substitute a late queued policy message. Use the actual session ID, never a guessed ID. Record the instructions file as owned and remove it once all launches have copied it.
 
 Before launch, state `#ISSUE — MODEL/EFFORT; subagents MODEL/EFFORT; evidence: actual difficulty; escalation: none or specific justification`. Capture the `run:` value, confirm the worker is running, and record its session ID. Start the next eligible ticket immediately.
@@ -86,6 +88,12 @@ Use `codex-issues status`, `show`, and `send` for the specific run and issue nam
 
 Verify the issue's acceptance criteria against retained test/review evidence, required current-revision CI, merged default-branch state, and the canonical deployment result when applicable. A structured deployment pass supplies its production checks; rerun only missing or invalid evidence. Verify owned cleanup, exit completed worker sessions, and clean their launcher runs while preserving other sessions' resources.
 
-Keep the goal active while any ticket remains queued, running, blocked but recoverable, unverified, unmerged, undeployed when deployment is required, or not cleaned up. Mark the goal complete only when every supplied ticket is verified and no managed session remains active.
+## Exit workers and clean up
+
+After verifying delivery and confirming commits are preserved remotely, inspect each worker's state. A `done` marker does not exit the interactive session. The launcher has no unattended shutdown command: `send` queues a model message and cannot execute `/quit` as a terminal command.
+
+Ask the user to enter `/quit` at each idle worker prompt, supplying the exact `codex-issues attach <run> <issue>` command. Preserve the run map and worktree while exit is pending. When `status` shows `-` in the PROCESS column for every worker, run `codex-issues cleanup <run>`. If cleanup refuses, inspect the active process or dirty worktree and preserve it until resolved. Confirm the run and recorded worktree paths are gone; retained branches are intentional.
+
+Keep the goal active, when supported, while any ticket remains queued, running, blocked but recoverable, unverified, unmerged, undeployed when deployment is required, or not cleaned up. Mark the goal complete only when every supplied ticket is verified and no managed session remains active.
 
 Finish with a compact report listing each ticket, selected issue/subagent models, result, PR or commit, verification evidence, and any intentionally retained resource or unresolved blocker.

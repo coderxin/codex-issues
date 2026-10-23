@@ -44,7 +44,11 @@ if args[0] == 'queue':
     with (root / 'queues.jsonl').open('a') as log:
         log.write(json.dumps(args) + '\n')
     sys.exit(1 if (root / 'reject-queue').exists() else 0)
-assert args[0] == '--yolo'
+# Issue 78 explicitly opts in; other launches must preserve normal permissions.
+issue = pathlib.Path.cwd().name.removeprefix('issue-')
+assert ('--yolo' in args) == (issue == '78')
+assert '--dangerously-bypass-approvals-and-sandbox' not in args
+assert '--sandbox' not in args and '--ask-for-approval' not in args
 assert '--dangerously-bypass-hook-trust' not in args
 configs = [tomllib.loads(args[i+1]) for i, arg in enumerate(args) if arg == '-c']
 hooks = {k: v for config in configs for k, v in config.get('hooks', {}).items()}
@@ -259,7 +263,7 @@ tmux kill-pane -t "$pane"
 tmux has-session -t container
 # Relative roots (including spaces) are resolved before changing into worktrees.
 output="$(cd "$TEST_ROOT/repo" && env -u TMUX CODEX_ISSUES_STATE_ROOT='../relative state' \
-  CODEX_ISSUES_WORKTREE_ROOT='../relative worktrees' "$script" start 78)"
+  CODEX_ISSUES_WORKTREE_ROOT='../relative worktrees' "$script" start --yolo 78)"
 run="$(awk '/^run: / {print $2}' <<< "$output")"
 wait_for test -f "$TEST_ROOT/ready-78"
 relative_run="$TEST_ROOT/relative state/$run"

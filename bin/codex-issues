@@ -18,11 +18,12 @@ Usage:
   codex-issues mark <run> <issue> <done|blocked>
   codex-issues cleanup <run>
 
-Each issue starts in a fresh `codex --yolo` process, isolated Git worktree,
+Each issue starts in a fresh Codex process, isolated Git worktree,
 branch, and tmux window. Run this inside tmux to add windows to the current
 session; outside tmux, a new detached session is created.
 
 Start options:
+  --yolo                            Explicitly disable approvals and sandboxing
   --model <model>                    Issue-session model
   --effort <effort>                  Issue-session reasoning effort
   --subagent-model <model>           Default model for spawned subagents
@@ -179,7 +180,7 @@ worker() {
   tmux set-option -w -t "$pane_id" remain-on-exit on
   set_state working
   hook_args
-  "$codex_bin" --yolo "${codex_args[@]}" "${HOOK_ARGS[@]}" "$(<"$prompt")" || rc=$?
+  "$codex_bin" "${codex_args[@]}" "${HOOK_ARGS[@]}" "$(<"$prompt")" || rc=$?
   read_state
   if [[ "$rc" -ne 0 ]]; then
     set_state error
@@ -192,9 +193,10 @@ worker() {
 }
 
 start() {
-  local model="" effort="" subagent_model="" subagent_effort="" configured_effort instructions_file="" instructions="" supervisor_thread=""
+  local model="" effort="" subagent_model="" subagent_effort="" configured_effort instructions_file="" instructions="" supervisor_thread="" yolo=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --yolo) yolo=1; shift ;;
       --model|--effort|--subagent-model|--subagent-effort|--instructions-file|--supervisor-thread)
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "$1 requires a value"
         case "$1" in
@@ -234,6 +236,10 @@ start() {
   local repo_root repo_slug default_branch base_ref repo_name stamp run run_path session owns_session codex_bin encoded
   local -a codex_args=()
   codex_bin="$(command -v codex)"
+  if [[ "$yolo" -eq 1 ]]; then
+    printf 'codex-issues: --yolo disables Codex approvals and sandboxing for these workers\n' >&2
+    codex_args+=(--yolo)
+  fi
   [[ -z "$model" ]] || codex_args+=(--model "$model")
   [[ -z "$effort" ]] || codex_args+=(-c "model_reasoning_effort=\"$effort\"")
   if [[ -n "$subagent_model" ]]; then
