@@ -13,7 +13,7 @@ This launcher is for people who want GitHub issue numbers and reported states vi
 ## Requirements
 
 - Bash, Git, jq, tmux, and an authenticated GitHub CLI (`gh`).
-- Codex CLI with hooks and `codex queue` support. Startup checks queue availability; hooks must be trusted for activity tracking and messaging.
+- Codex CLI with hooks and `codex queue` support. Compatibility was checked with **0.163.0** on macOS on 23 October 2026; other versions are not certified by this check. Startup checks queue availability; hooks must be trusted for activity tracking and messaging.
 - A local clone of the target repository with an `origin` remote and access to its default branch.
 
 Workers inherit your normal Codex approval and sandbox configuration. The launcher does not make an already-unrestricted configuration safe. Review your Codex permissions before starting work; worktrees separate files, not credentials, databases, ports, or deployment targets.
@@ -147,6 +147,14 @@ bash tests/test-codex-issues.sh
 ```
 
 The regression test uses real Git and tmux with fake GitHub and Codex commands. It requires Python 3.11+ as well as the runtime shell tools. It creates an isolated tmux server and temporary repositories, then removes them on exit. It does not launch a paid model or change real GitHub issues.
+
+## Compatibility check
+
+On 23 October 2026, a disposable Git repository and an isolated tmux server were used with the real Codex CLI 0.163.0 and GPT-6 Luna at low reasoning effort. GitHub issue input was a local fixture; no real issue was modified. The worker ran with a read-only sandbox and no command approvals.
+
+Verified: launcher startup, acceptance of issue/subagent model and effort configuration under `--strict-config`, initial-prompt session binding, `Stop` changing the state to `waiting`, and a queued follow-up producing a second response in the same conversation. This does not test an implementation task, subagent spawning, delivery, or every account/model combination.
+
+The smoke invocation used Codex's one-off `--dangerously-bypass-hook-trust` option for the inspected launcher hooks. The launcher itself never adds that flag. Interactive `/hooks` review remains a first-use requirement and was not automated by the smoke check. The CI regression tests simulate Codex and GitHub while exercising real Git and tmux.
 
 ## Provenance
 
