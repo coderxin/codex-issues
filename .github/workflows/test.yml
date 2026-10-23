@@ -19,7 +19,9 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y tmux jq
+          sudo apt-get install -y tmux jq shellcheck
           python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+      - name: Check shell scripts
+        run: shellcheck --severity=warning bin/codex-issues tests/test-codex-issues.sh
       - name: Run regression test
         run: bash tests/test-codex-issues.sh

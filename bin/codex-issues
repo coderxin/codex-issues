@@ -18,15 +18,18 @@ Usage:
   codex-issues mark <run> <issue> <done|blocked>
   codex-issues cleanup <run>
 
-Each issue starts in a fresh `codex --yolo` process, isolated Git worktree,
+Each issue starts in a fresh Codex process, isolated Git worktree,
 branch, and tmux window. Run this inside tmux to add windows to the current
 session; outside tmux, a new detached session is created.
 
 Start options:
+  --yolo                            Explicitly disable approvals and sandboxing
   --model <model>                    Issue-session model
   --effort <effort>                  Issue-session reasoning effort
   --subagent-model <model>           Default model for spawned subagents
   --subagent-effort <effort>         Default effort for spawned subagents
+  --instructions-file <path>        Include supervisor instructions before work starts
+  --supervisor-thread <thread>      Queue outcome notifications to this Codex session
 EOF
 }
 
@@ -84,12 +87,29 @@ set_state() {
   tmp="$(mktemp "$RUN_DIR/prompts/issue-$issue.state.XXXXXX")"
   printf '%s\n' "$next" > "$tmp"
   mv "$tmp" "$RUN_DIR/prompts/issue-$issue.state"
+  [[ "$next" != working ]] || rm -f "$RUN_DIR/prompts/issue-$issue.notified"
   paint_worker "$next"
 }
 
 read_state() {
   state=unknown
   [[ ! -f "$RUN_DIR/prompts/issue-$issue.state" ]] || read -r state < "$RUN_DIR/prompts/issue-$issue.state"
+}
+
+# Native queue wakes an idle supervisor; repeated outcomes need no new turn.
+notify_supervisor() {
+  local thread codex_bin previous="" notice="$RUN_DIR/prompts/issue-$issue.notified"
+  [[ -f "$RUN_DIR/supervisor" ]] || return 0
+  case "$state" in done|blocked|waiting|error|closed) ;; *) return 0 ;; esac
+  [[ ! -f "$notice" ]] || read -r previous < "$notice"
+  [[ "$previous" != "$state" ]] || return 0
+  read -r thread < "$RUN_DIR/supervisor"
+  read -r codex_bin < "$RUN_DIR/codex"
+  if "$codex_bin" queue --thread "$thread" --message "codex-issues $(basename "$RUN_DIR") #$issue is $state. Inspect its current state and evidence before the next action." >/dev/null; then
+    printf '%s\n' "$state" > "$notice"
+  else
+    printf 'codex-issues: supervisor notification failed for #%s; outcome remains %s\n' "$issue" "$state" >&2
+  fi
 }
 
 # Route by hook cwd: a shared Codex server may not inherit the launcher's env.
@@ -127,6 +147,8 @@ hook() {
       Stop) [[ "$state" == "done" || "$state" == blocked ]] || set_state waiting ;;
       Interrupt) set_state waiting ;;
     esac
+    read_state
+    notify_supervisor
     break
   done
   printf '{}\n'
@@ -158,27 +180,32 @@ worker() {
   tmux set-option -w -t "$pane_id" remain-on-exit on
   set_state working
   hook_args
-  "$codex_bin" --yolo "${codex_args[@]}" "${HOOK_ARGS[@]}" "$(<"$prompt")" || rc=$?
+  "$codex_bin" "${codex_args[@]}" "${HOOK_ARGS[@]}" "$(<"$prompt")" || rc=$?
   read_state
   if [[ "$rc" -ne 0 ]]; then
     set_state error
   elif [[ "$state" != "done" && "$state" != blocked ]]; then
     set_state closed
   fi
+  read_state
+  notify_supervisor
   exit "$rc"
 }
 
 start() {
-  local model="" effort="" subagent_model="" subagent_effort="" configured_effort
+  local model="" effort="" subagent_model="" subagent_effort="" configured_effort instructions_file="" instructions="" supervisor_thread="" yolo=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --model|--effort|--subagent-model|--subagent-effort)
+      --yolo) yolo=1; shift ;;
+      --model|--effort|--subagent-model|--subagent-effort|--instructions-file|--supervisor-thread)
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "$1 requires a value"
         case "$1" in
           --model) model="$2" ;;
           --effort) effort="$2" ;;
           --subagent-model) subagent_model="$2" ;;
           --subagent-effort) subagent_effort="$2" ;;
+          --instructions-file) instructions_file="$2" ;;
+          --supervisor-thread) supervisor_thread="$2" ;;
         esac
         shift 2
         ;;
@@ -188,6 +215,12 @@ start() {
     esac
   done
   [[ $# -gt 0 ]] || die "start requires at least one issue"
+  if [[ -n "$instructions_file" ]]; then
+    [[ -f "$instructions_file" && -r "$instructions_file" ]] || die "instructions file is not readable: $instructions_file"
+    instructions="$(cat "$instructions_file")"
+    [[ -n "$instructions" ]] || die "instructions file is empty: $instructions_file"
+  fi
+  [[ -z "$supervisor_thread" || "$supervisor_thread" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid supervisor thread"
   for configured_effort in "$effort" "$subagent_effort"; do
     case "$configured_effort" in
       ''|none|low|medium|high|xhigh|max) ;;
@@ -203,6 +236,10 @@ start() {
   local repo_root repo_slug default_branch base_ref repo_name stamp run run_path session owns_session codex_bin encoded
   local -a codex_args=()
   codex_bin="$(command -v codex)"
+  if [[ "$yolo" -eq 1 ]]; then
+    printf 'codex-issues: --yolo disables Codex approvals and sandboxing for these workers\n' >&2
+    codex_args+=(--yolo)
+  fi
   [[ -z "$model" ]] || codex_args+=(--model "$model")
   [[ -z "$effort" ]] || codex_args+=(-c "model_reasoning_effort=\"$effort\"")
   if [[ -n "$subagent_model" ]]; then
@@ -239,6 +276,7 @@ start() {
   printf '%s\t%s\t%s\n' "$session" "$repo_root" "$worktree_parent" > "$run_path/meta"
   : > "$run_path/workers.tsv"
   printf '%s\n' "$codex_bin" > "$run_path/codex"
+  [[ -z "$supervisor_thread" ]] || printf '%s\n' "$supervisor_thread" > "$run_path/supervisor"
   printf 'run: %s\n' "$run"
 
   local issue_ref issue_json issue title body url branch worktree prompt window launch ids window_id pane_id
@@ -274,6 +312,9 @@ start() {
     worktree="$(cd "$worktree" && pwd -P)"
     if ! {
       printf 'Work on GitHub issue #%s in this isolated worktree and branch.\n\n' "$issue"
+      if [[ -n "$instructions" ]]; then
+        printf '<supervisor_instructions>\n%s\n</supervisor_instructions>\n\n' "$instructions"
+      fi
       printf 'Issue: %s\nTitle: %s\n\n<github_issue>\n%s\n</github_issue>\n\n' "$url" "$title" "$body"
       printf 'Treat the issue as the task source of truth. Follow all applicable AGENTS.md instructions. '
       printf 'Own the issue end to end, verify the result, and do not work on unrelated issues. '
@@ -410,6 +451,8 @@ mark_worker() {
   row="$(worker_row "$1")" || die "issue not found in run: $1"
   IFS=$'\t' read -r issue window_id pane_id worktree branch url <<< "$row"
   set_state "$2"
+  read_state
+  notify_supervisor
 }
 
 cleanup_run() {
@@ -436,12 +479,13 @@ cleanup_run() {
     if [[ -d "$worktree" ]]; then
       git -C "$REPO_ROOT" worktree remove "$worktree"
     fi
-    rm -f "$RUN_DIR/prompts/issue-$issue.txt" "$RUN_DIR/prompts/issue-$issue.state" "$RUN_DIR/prompts/issue-$issue.session"
+    rm -f "$RUN_DIR/prompts/issue-$issue.txt" "$RUN_DIR/prompts/issue-$issue.state" "$RUN_DIR/prompts/issue-$issue.session" "$RUN_DIR/prompts/issue-$issue.notified"
   done < "$RUN_DIR/workers.tsv"
   git -C "$REPO_ROOT" worktree prune
   rm -f "$RUN_DIR/prompts/issue.json"
   rmdir "$WORKTREE_PARENT" 2>/dev/null || true
   rm -f "$RUN_DIR/codex"
+  rm -f "$RUN_DIR/supervisor"
   rm "$RUN_DIR/workers.tsv" "$RUN_DIR/meta"
   rmdir "$RUN_DIR/prompts" "$RUN_DIR"
   printf 'cleaned run %s; issue branches were retained\n' "$(basename "$RUN_DIR")"

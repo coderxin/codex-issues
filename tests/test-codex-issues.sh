@@ -41,8 +41,14 @@ if args[0] == 'queue':
     if '--help' in args:
         sys.exit(0)
     (root / 'queue.json').write_text(json.dumps(args))
+    with (root / 'queues.jsonl').open('a') as log:
+        log.write(json.dumps(args) + '\n')
     sys.exit(1 if (root / 'reject-queue').exists() else 0)
-assert args[0] == '--yolo'
+# Issue 78 explicitly opts in; other launches must preserve normal permissions.
+issue = pathlib.Path.cwd().name.removeprefix('issue-')
+assert ('--yolo' in args) == (issue == '78')
+assert '--dangerously-bypass-approvals-and-sandbox' not in args
+assert '--sandbox' not in args and '--ask-for-approval' not in args
 assert '--dangerously-bypass-hook-trust' not in args
 configs = [tomllib.loads(args[i+1]) for i, arg in enumerate(args) if arg == '-c']
 hooks = {k: v for config in configs for k, v in config.get('hooks', {}).items()}
@@ -87,22 +93,30 @@ wait_for() {
   return 1
 }
 if "$script" status '../bad' >/dev/null 2>&1; then exit 1; fi
+instructions=$'Keep scope small; preserve $HOME and `uname` literally.\nSelect affected tests before running them.'
+printf '%s\n' "$instructions" > "$TEST_ROOT/start instructions.txt"
+if (cd "$TEST_ROOT/repo" && "$script" start --instructions-file "$TEST_ROOT/missing" 12) >/dev/null 2>&1; then exit 1; fi
+if (cd "$TEST_ROOT/repo" && "$script" start --supervisor-thread 'bad/thread' 12) >/dev/null 2>&1; then exit 1; fi
+[[ ! -e "$CODEX_ISSUES_STATE_ROOT" && ! -e "$CODEX_ISSUES_WORKTREE_ROOT" ]]
 output="$(cd "$TEST_ROOT/repo" && env -u TMUX "$script" start \
-  --model gpt-6-astra --effort medium \
-  --subagent-model 'openai/gpt-5.6-"luna"' --subagent-effort low 12 34)"
+  --instructions-file "$TEST_ROOT/start instructions.txt" --supervisor-thread supervisor-thread \
+  --model gpt-6-sol --effort medium \
+  --subagent-model 'gpt-6-luna' --subagent-effort low 12 34)"
 run="$(awk '/^run: / { print $2 }' <<< "$output")"
 run_dir="$CODEX_ISSUES_STATE_ROOT/$run"
 pane="$(awk -F '\t' '$1 == 12 {print $3}' "$run_dir/workers.tsv")"
 wait_for test -f "$TEST_ROOT/ready-12"
 wait_for test -f "$TEST_ROOT/ready-34"
-python3 - "$TEST_ROOT/args-12.json" "$TEST_ROOT/args-34.json" <<'PY'
+python3 - "$instructions" "$TEST_ROOT/args-12.json" "$TEST_ROOT/args-34.json" <<'PY'
 import json, sys, tomllib
-for path in sys.argv[1:]:
+for path in sys.argv[2:]:
     args = json.load(open(path))
-    assert args[args.index('--model') + 1] == 'gpt-6-astra'
+    assert sys.argv[1] in args[-1]
+    assert args[-1].index('<supervisor_instructions>') < args[-1].index('<github_issue>')
+    assert args[args.index('--model') + 1] == 'gpt-6-sol'
     configs = [tomllib.loads(args[i + 1]) for i, arg in enumerate(args) if arg == '-c']
     assert any(config.get('model_reasoning_effort') == 'medium' for config in configs)
-    assert any(config.get('agents', {}).get('default_subagent_model') == 'openai/gpt-5.6-"luna"' for config in configs)
+    assert any(config.get('agents', {}).get('default_subagent_model') == 'gpt-6-luna' for config in configs)
     assert any(config.get('agents', {}).get('default_subagent_reasoning_effort') == 'low' for config in configs)
 PY
 "$script" list | grep "$run" >/dev/null
@@ -122,7 +136,20 @@ assert_state() {
 }
 hook_event Stop
 assert_state waiting
+python3 - "$TEST_ROOT/queue.json" <<'PY'
+import json, sys
+args = json.load(open(sys.argv[1]))
+assert args[:3] == ['queue', '--thread', 'supervisor-thread']
+assert '#12 is waiting.' in args[-1]
+PY
+notification_count="$(wc -l < "$TEST_ROOT/queues.jsonl")"
+hook_event Stop
+[[ "$(wc -l < "$TEST_ROOT/queues.jsonl")" == "$notification_count" ]]
 "$script" mark "$run" 12 "done"
+python3 - "$TEST_ROOT/queue.json" <<'PY'
+import json, sys
+assert '#12 is done.' in json.load(open(sys.argv[1]))[-1]
+PY
 hook_event Stop
 assert_state "done"
 [[ "$(tmux show-options -wqv -t "$pane" window-status-style)" == fg=green ]]
@@ -156,7 +183,15 @@ assert_state waiting
 # Rejected messages, unknown sessions, and recycled panes fail closed.
 touch "$TEST_ROOT/reject-queue"
 if "$script" send "$run" 12 nope >/dev/null 2>&1; then exit 1; fi
+# A failed notification preserves the worker outcome and can be retried.
+"$script" mark "$run" 12 blocked 2>/dev/null
+assert_state blocked
+[[ "$(cat "$run_dir/prompts/issue-12.notified")" == waiting ]]
 rm "$TEST_ROOT/reject-queue"
+"$script" mark "$run" 12 blocked
+[[ "$(cat "$run_dir/prompts/issue-12.notified")" == blocked ]]
+hook_event Interrupt
+assert_state waiting
 rm "$run_dir/prompts/issue-12.session"
 if "$script" send "$run" 12 nope >/dev/null 2>&1; then exit 1; fi
 hook_event SessionStart
@@ -188,6 +223,7 @@ if "$script" cleanup "$run" >/dev/null 2>&1; then exit 1; fi
 printf '0\n' > "$TEST_ROOT/exit-12"
 printf '7\n' > "$TEST_ROOT/exit-34"
 wait_for grep -qx error "$run_dir/prompts/issue-34.state"
+wait_for grep -qx error "$run_dir/prompts/issue-34.notified"
 pane_dead() { [[ "$(tmux display-message -p -t "$pane" '#{pane_dead}')" == 1 ]]; }
 wait_for pane_dead
 assert_state "done"
@@ -211,6 +247,7 @@ args = json.load(open(sys.argv[1]))
 assert '--model' not in args
 configs = [tomllib.loads(args[i + 1]) for i, arg in enumerate(args) if arg == '-c']
 assert all('model_reasoning_effort' not in config and 'agents' not in config for config in configs)
+assert '<supervisor_instructions>' not in args[-1]
 PY
 printf '0\n' > "$TEST_ROOT/exit-56"
 wait_for grep -qx closed "$CODEX_ISSUES_STATE_ROOT/$run/prompts/issue-56.state"
@@ -226,7 +263,7 @@ tmux kill-pane -t "$pane"
 tmux has-session -t container
 # Relative roots (including spaces) are resolved before changing into worktrees.
 output="$(cd "$TEST_ROOT/repo" && env -u TMUX CODEX_ISSUES_STATE_ROOT='../relative state' \
-  CODEX_ISSUES_WORKTREE_ROOT='../relative worktrees' "$script" start 78)"
+  CODEX_ISSUES_WORKTREE_ROOT='../relative worktrees' "$script" start --yolo 78)"
 run="$(awk '/^run: / {print $2}' <<< "$output")"
 wait_for test -f "$TEST_ROOT/ready-78"
 relative_run="$TEST_ROOT/relative state/$run"

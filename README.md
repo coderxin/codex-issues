@@ -4,13 +4,21 @@ Run GitHub issues in separate Codex sessions, each with its own branch, Git work
 
 A personal experiment for prepared bug fixes and bounded tasks. GitHub holds the issue descriptions; tmux makes the workers visible and accessible.
 
+## When to use it
+
+As of 23 October 2026, Codex provides a [command center through `codex agents` and `/agents`](https://learn.chatgpt.com/docs/developer-commands#manage-chats-with-agents), [native subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), and [managed worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees). Start with those if they cover your workflow.
+
+This launcher is for people who want GitHub issue numbers and reported states visible in tmux's window bar, with separate top-level conversations they can enter directly. It adds issue-to-session bookkeeping and optional outcome notifications. It does not replace repository delivery rules or provide guaranteed autonomous completion.
+
 ## Requirements
 
 - Bash, Git, jq, tmux, and an authenticated GitHub CLI (`gh`).
-- Codex CLI with hooks and `codex queue` support. Startup checks queue availability; hooks must be trusted for activity tracking and messaging.
+- Codex CLI with hooks and `codex queue` support. Compatibility was checked with **0.163.0** on macOS on 23 October 2026; other versions are not certified by this check. Startup checks queue availability; hooks must be trusted for activity tracking and messaging.
 - A local clone of the target repository with an `origin` remote and access to its default branch.
 
-The launcher currently uses `codex --yolo`, bypassing approval and sandbox protections. Inspect that choice before running it in your environment. Worktrees separate files, not credentials, databases, ports, or deployment targets.
+Workers inherit your normal Codex approval and sandbox configuration. The launcher does not make an already-unrestricted configuration safe. Review your Codex permissions before starting work; worktrees separate files, not credentials, databases, ports, or deployment targets.
+
+Only use `codex-issues start --yolo 123` when you deliberately want to disable approvals and sandboxing for that run. The launcher prints a warning and passes `--yolo` to each worker. It never bypasses hook trust. With restricted permissions, a worker may need approval to update launcher state outside its worktree; you can also run `codex-issues mark` yourself after inspecting the outcome.
 
 ## Install
 
@@ -23,7 +31,7 @@ export PATH="$PWD/bin:$PATH"
 codex-issues --help
 ```
 
-The repository is private during preparation, so cloning requires access. Persist the absolute `bin` path in your shell configuration if you want it in future terminals. Keep the checkout in place while runs exist: worker hooks reference the launcher's absolute path.
+Persist the absolute `bin` path in your shell configuration if you want it in future terminals. Keep the checkout in place while runs exist: worker hooks reference the launcher's absolute path.
 
 ## Run manually
 
@@ -65,18 +73,29 @@ Invoke the skill from the target repository:
 $codex-issue-supervisor 123 124 125
 ```
 
-The supervisor reads the issues, considers dependencies and file overlap, and starts each eligible ticket with a separate command. It defaults to three concurrent workers and requests progress checks every 30 minutes. These are agent instructions, not a durable scheduler; the supervisor must remain active and have a suitable goal or waiting mechanism.
+The supervisor starts up to three workers concurrently, with scope, cost and verification instructions in their initial prompts. It serializes actual dependencies while allowing independent inspection and implementation to proceed. Workers notify the supervisor through Codex's native session queue, so an idle supervisor can resume on outcomes rather than repeatedly poll. A periodic checkpoint requires a separate durable scheduler; the launcher does not provide one.
 
-The worker sessions are separate top-level Codex conversations. They receive the issue details, not the supervisor's full conversation. They may use subagents internally. Keep decisions and acceptance criteria in the issues so fresh sessions have the context they need.
+The worker sessions are separate top-level Codex conversations. They receive the issue details and explicit startup instructions, not the supervisor's full conversation. They may use subagents internally. Keep decisions and acceptance criteria in the issues so fresh sessions have the context they need.
 
-The skill's model table is a personal starting policy. Edit it for models available in your account and your preferred effort levels. Model names are passed to Codex; the script does not validate model availability.
+The skill defaults to Sol for implementation and Luna for mechanical work and subagents. Stronger models require evidence, and Astra requires explicit authorization. Edit this personal starting policy for your account and cost constraints. These are agent instructions: the launcher passes model IDs through and does not validate account access or prices.
+
+## Startup instructions and notifications
+
+```bash
+codex-issues start --instructions-file ./worker-instructions.md \
+  --supervisor-thread <supervisor-session-id> 123
+```
+
+The instructions file is copied into each initial prompt before work starts. Use it for scope, cost constraints and file ownership; later `send` messages may wait until the current turn ends. The file can be removed after startup.
+
+Notifications identify the run, issue and reported outcome. Repeated outcomes within a turn are suppressed. A queue failure is reported without changing the worker's outcome; notification can be retried by marking the outcome again. Inspect current evidence before acting on a notification. Omit `--supervisor-thread` for manual runs.
 
 ## Models
 
 ```bash
-codex-issues start --model <model-id> --effort medium 123
-codex-issues start --model <model-id> --effort high \
-  --subagent-model <worker-model-id> --subagent-effort medium 124
+codex-issues start --model gpt-6-sol --effort medium 123
+codex-issues start --model gpt-6-sol --effort high \
+  --subagent-model gpt-6-luna --subagent-effort medium 124
 ```
 
 `--model` and `--effort` configure the issue session. The subagent flags set defaults for agents that session spawns. They do not change the supervisor. Omitted flags leave the normal Codex configuration in effect.
@@ -129,6 +148,14 @@ bash tests/test-codex-issues.sh
 
 The regression test uses real Git and tmux with fake GitHub and Codex commands. It requires Python 3.11+ as well as the runtime shell tools. It creates an isolated tmux server and temporary repositories, then removes them on exit. It does not launch a paid model or change real GitHub issues.
 
+## Compatibility check
+
+On 23 October 2026, a disposable Git repository and an isolated tmux server were used with the real Codex CLI 0.163.0 and GPT-6 Luna at low reasoning effort. GitHub issue input was a local fixture; no real issue was modified. The worker ran with a read-only sandbox and no command approvals.
+
+Verified: launcher startup, acceptance of issue/subagent model and effort configuration under `--strict-config`, initial-prompt session binding, `Stop` changing the state to `waiting`, and a queued follow-up producing a second response in the same conversation. This does not test an implementation task, subagent spawning, delivery, or every account/model combination.
+
+The smoke invocation used Codex's one-off `--dangerously-bypass-hook-trust` option for the inspected launcher hooks. The launcher itself never adds that flag. Interactive `/hooks` review remains a first-use requirement and was not automated by the smoke check. The CI regression tests simulate Codex and GitHub while exercising real Git and tmux.
+
 ## Provenance
 
-Extracted from the author's dotfiles at commit `97a3a3839f0a7981a8208533846d73a1bc7b51af`. This repository is the maintenance home for the script and supervisor skill. Public release and licensing are pending.
+Extracted from the author's dotfiles at commit `97a3a3839f0a7981a8208533846d73a1bc7b51af`. This repository is the maintenance home for the script and supervisor skill. Licensed under the [MIT License](LICENSE).
